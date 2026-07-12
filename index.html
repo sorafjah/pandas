@@ -145,27 +145,46 @@ for (let i = 0; i < 10; i++) {
 /* ---------- bamboo forest ring ---------- */
 const stalkMat = new THREE.MeshLambertMaterial({ color: 0x7cbf6b });
 const stalkDarkMat = new THREE.MeshLambertMaterial({ color: 0x69a95c });
-const leafMat = new THREE.MeshLambertMaterial({ color: 0x8ed07e });
+const nodeMat = new THREE.MeshLambertMaterial({ color: 0x5c9950 });
+const leafMat = new THREE.MeshLambertMaterial({ color: 0x8ed07e, side: THREE.DoubleSide });
+
+function makeLeafBlade(len) {
+  // thin pointed blade, flattened almost to a plane
+  const geo = new THREE.ConeGeometry(0.05, len, 4, 1);
+  geo.scale(0.14, 1, 1);          // squash into a slender blade
+  const m = new THREE.Mesh(geo, leafMat);
+  return m;
+}
 
 function makeBambooStalk(h) {
   const g = new THREE.Group();
-  const stalk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.07, 0.09, h, 6),
-    Math.random() < 0.5 ? stalkMat : stalkDarkMat
-  );
-  stalk.position.y = h / 2;
-  stalk.castShadow = true;
-  g.add(stalk);
-  const tufts = 2 + (Math.random() * 2 | 0);
+  const segMat = Math.random() < 0.5 ? stalkMat : stalkDarkMat;
+  const segs = 3 + (Math.random() * 2 | 0);
+  const segH = h / segs;
+  const rTop = 0.028, rBot = 0.036;
+  for (let i = 0; i < segs; i++) {
+    const seg = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBot, segH * 0.94, 6), segMat);
+    seg.position.y = segH * i + segH / 2;
+    seg.castShadow = true;
+    g.add(seg);
+    if (i > 0) {
+      // node ring between segments
+      const node = new THREE.Mesh(new THREE.CylinderGeometry(rTop * 1.35, rTop * 1.35, segH * 0.06, 6), nodeMat);
+      node.position.y = segH * i;
+      g.add(node);
+    }
+  }
+  // thin sasa-style leaves near the top, fanning outward
+  const tufts = 3 + (Math.random() * 3 | 0);
   for (let i = 0; i < tufts; i++) {
-    const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.9, 5), leafMat);
-    leaf.position.set(
-      (Math.random() - 0.5) * 0.5,
-      h * (0.55 + 0.4 * Math.random()),
-      (Math.random() - 0.5) * 0.5
-    );
-    leaf.rotation.z = (Math.random() - 0.5) * 1.2;
-    leaf.rotation.x = (Math.random() - 0.5) * 1.2;
+    const len = 0.5 + Math.random() * 0.35;
+    const leaf = makeLeafBlade(len);
+    const ang = Math.random() * Math.PI * 2;
+    const droop = 0.55 + Math.random() * 0.5;
+    leaf.position.set(0, h * (0.62 + 0.34 * Math.random()), 0);
+    leaf.rotation.y = ang;
+    leaf.rotation.x = droop;              // tip droops outward/down like real sasa leaves
+    leaf.translateY(len * 0.42);
     g.add(leaf);
   }
   return g;
@@ -329,15 +348,22 @@ function makePandaMesh(traits) {
     ear.position.set(sx * 0.36, 0.42, 0);
     head.add(ear);
   }
-  // droopy eye patches (タレ目)
+  // eye patches — a few shape variants per panda for individuality
+  const eyeShapes = [
+    { sy: 1.45, sz: 0.42, rot: -0.45, py: 0.06 },   // タレ目 droopy (original)
+    { sy: 0.78, sz: 0.55, rot: -0.12, py: 0.02 },   // 横長 wide/horizontal
+    { sy: 1.1, sz: 0.42, rot: 0.05, py: 0.05 },     // まん丸めアーモンド
+    { sy: 1.0, sz: 0.48, rot: -0.62, py: 0.09 }     // つり目寄り slightly upswept
+  ];
+  const shape = eyeShapes[traits.eyeShape % eyeShapes.length];
   for (const sx of [-1, 1]) {
     const patch = new THREE.Mesh(S(0.155 * traits.patch), PATCH);
-    patch.scale.set(1, 1.45, 0.42);
-    patch.position.set(sx * 0.21, 0.06, headR * 0.86);
-    patch.rotation.z = sx * -0.45;    // outer edge droops down
+    patch.scale.set(1, shape.sy, shape.sz);
+    patch.position.set(sx * 0.21, shape.py, headR * 0.86);
+    patch.rotation.z = sx * shape.rot;
     head.add(patch);
     const eye = new THREE.Mesh(S(0.062), EYE);
-    eye.position.set(sx * 0.20, 0.055, headR * 0.99);
+    eye.position.set(sx * 0.20, shape.py - 0.005, headR * 0.99);
     eye.userData.isEye = true;
     head.add(eye);
     const hl = new THREE.Mesh(S(0.02), HILITE);
@@ -396,9 +422,18 @@ class Panda {
       act: 0.35 + Math.random() * 0.65,       // activity: chance to move / roll
       soc,                                    // cohesion weight
       loner: soc < 0.25,
-      friendly: Math.random()                 // reaction to player
+      friendly: Math.random(),                // reaction to player
+      eyeShape: (Math.random() * 4) | 0        // 0-3: eye patch shape variant
     };
     this.mesh = makePandaMesh(this.traits);
+    // cache the tilt-group's local bounding box (before any position/rotation is applied)
+    // so we can generically keep the panda above ground during roll/sleep, however the
+    // limbs happen to be offset.
+    const tiltForBox = this.mesh.userData.tilt;
+    tiltForBox.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(tiltForBox);
+    this.localMin = box.min.clone();
+    this.localMax = box.max.clone();
     const a = Math.random() * Math.PI * 2, d = Math.random() * FIELD_R * 0.7;
     this.mesh.position.set(Math.cos(a) * d, 0, Math.sin(a) * d);
     scene.add(this.mesh);
@@ -415,6 +450,7 @@ class Panda {
     this.labelT = 0;
     this.baseY = 0;
     this.radius = 0.55 * this.traits.size;   // for separation
+    this.bodyH = 0.42 * this.traits.chub;    // matches makePandaMesh's bodyW, used to keep body above ground when tilted
   }
 
   /* --- state helpers --- */
@@ -449,10 +485,12 @@ class Panda {
     if (f > 0.66) this.setState('hopReact', 0.7);        // 人懐っこい: ぴょん
     else if (this.traits.act > 0.7) this.setState('roll', 1.2); // 活発: ころん
     else this.setState('tiltReact', 1.1);                // おっとり: 首かしげ
-    // face the camera
+    // actually turn to face the camera right now (not just steer toward it later)
     const dx = camera.position.x - this.mesh.position.x;
     const dz = camera.position.z - this.mesh.position.z;
-    this.heading = Math.atan2(dx, dz);
+    const faceAngle = Math.atan2(dx, dz);
+    this.mesh.rotation.y = faceAngle;
+    this.heading = faceAngle;
   }
 
   pet(amount) {
@@ -585,15 +623,17 @@ class Panda {
       }
       case 'sit': {
         tilt.rotation.x = -0.15;
-        this.mesh.position.y = -0.06;
+        this.mesh.position.y = 0.02;
         head.rotation.y = Math.sin(this.animT * 0.7) * 0.3;
         if (Math.random() < dt * 0.15) sfxMunch(); // idly nibbling grass
         if (this.stateT <= 0) { head.rotation.y = 0; this.mesh.position.y = 0; this.pickIdleState(); }
         break;
       }
       case 'sleep': {
-        tilt.rotation.z = THREE.MathUtils.lerp(tilt.rotation.z, 1.35, dt * 3);
-        this.mesh.position.y = THREE.MathUtils.lerp(this.mesh.position.y, -0.18, dt * 3);
+        tilt.rotation.z = THREE.MathUtils.lerp(tilt.rotation.z, 1.3, dt * 3);
+        const minY = lowestPointY(this);
+        const targetY = minY < 0 ? -minY : 0;
+        this.mesh.position.y = THREE.MathUtils.lerp(this.mesh.position.y, targetY, dt * 10);
         if (Math.random() < dt * 0.5) {
           const z = textSprite('ｚｚ', { color: '#8fb6d9', size: 40 });
           z.scale.set(1.1, 0.55, 1);
@@ -604,11 +644,13 @@ class Panda {
       }
       case 'roll': {
         tilt.rotation.x += dt * 6;
+        const minY = lowestPointY(this);
+        this.mesh.position.y = minY < 0 ? -minY : 0;
         p.x += Math.sin(this.mesh.rotation.y) * dt * 0.8;
         p.z += Math.cos(this.mesh.rotation.y) * dt * 0.8;
         const d = Math.hypot(p.x, p.z);
         if (d > FIELD_R) { p.x *= FIELD_R / d; p.z *= FIELD_R / d; }
-        if (this.stateT <= 0) { tilt.rotation.x = 0; this.setState('sit', 1 + Math.random()); }
+        if (this.stateT <= 0) { tilt.rotation.x = 0; this.mesh.position.y = 0; this.setState('sit', 1 + Math.random()); }
         break;
       }
       case 'hopReact': {
@@ -666,6 +708,22 @@ function shortAngle(a, b) {
   if (d > Math.PI) d -= Math.PI * 2;
   if (d < -Math.PI) d += Math.PI * 2;
   return d;
+}
+
+/* generic ground-clip guard: given a panda's cached local bounding box and its tilt
+   group's current rotation, find how far the lowest corner dips below y=0, so callers
+   can lift the whole panda by that amount and never clip through the ground. */
+const _cornerTmp = new THREE.Vector3();
+function lowestPointY(panda) {
+  const min = panda.localMin, max = panda.localMax;
+  const q = panda.mesh.userData.tilt.quaternion;
+  let minY = Infinity;
+  for (let ix = 0; ix < 2; ix++) for (let iy = 0; iy < 2; iy++) for (let iz = 0; iz < 2; iz++) {
+    _cornerTmp.set(ix ? max.x : min.x, iy ? max.y : min.y, iz ? max.z : min.z);
+    _cornerTmp.applyQuaternion(q);
+    if (_cornerTmp.y < minY) minY = _cornerTmp.y;
+  }
+  return minY;
 }
 
 for (let i = 0; i < PANDA_COUNT; i++) pandas.push(new Panda(i));
@@ -916,6 +974,7 @@ loop();
 
 /* test hook */
 window.__S = { pandas, bamboos, cam, camera, get frame() { return clock.elapsedTime; } };
+window.__BOX3__ = THREE.Box3;
 
 /* ---------- resize ---------- */
 window.addEventListener('resize', () => {
